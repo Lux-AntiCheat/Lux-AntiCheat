@@ -21,8 +21,11 @@ public class FlyCheckListener implements Listener {
     private final Map<UUID, Location> lastSafeLocation = new ConcurrentHashMap<>();
     private final Map<UUID, Long> lastFlagTime = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> flyViolations = new ConcurrentHashMap<>();
-    private final long FLAG_COOLDOWN_MS = 1000; // 1 Sekunde zwischen Flags
-    private final int MAX_VIOLATIONS = 3;
+    private final Map<UUID, Long> airStartTime = new ConcurrentHashMap<>();
+
+    private final long FLAG_COOLDOWN_MS = 1000; // Zeit zwischen Flags
+    private final int MAX_VIOLATIONS = 3;       // Anzahl bis Kick
+    private final long JUMP_TOLERANCE_MS = 700; // normale Sprungdauer
 
     public FlyCheckListener(JavaPlugin plugin) {
         this.plugin = plugin;
@@ -32,91 +35,73 @@ public class FlyCheckListener implements Listener {
     public void onPlayerMove(PlayerMoveEvent event) {
         Player p = event.getPlayer();
 
-        // Ignore Admins / OP / Permission
         if (p.isOp() || p.hasPermission("luxanticheat.bypass")) return;
-
-        // Ignore Creative / Spectator
         if (p.getGameMode().name().equals("CREATIVE") || p.getGameMode().name().equals("SPECTATOR")) return;
 
         Location from = event.getFrom();
         Location to = event.getTo();
         if (to == null) return;
 
-        // Ignore Elytra
-        if (p.isGliding()) {
+        // Elytra, Levitation, Fahrzeuge → ignorieren
+        if (p.isGliding() || p.hasPotionEffect(PotionEffectType.LEVITATION) || p.getVehicle() != null) {
             updateSafeLocation(p, to);
+            airStartTime.remove(p.getUniqueId());
             return;
         }
 
-        // Ignore Levitation
-        if (p.hasPotionEffect(PotionEffectType.LEVITATION)) {
-            updateSafeLocation(p, to);
-            return;
-        }
-
-        // Ignore Vehicles
-        if (p.getVehicle() != null) {
-            updateSafeLocation(p, to);
-            return;
-        }
-
-        // Ignore Falling
         double dy = to.getY() - from.getY();
-        if (dy < 0) {
-            updateSafeLocation(p, to);
-            return;
-        }
 
-        // Ignore Safe Blocks: Boden, Ladder, Slab/Stairs, Flüssigkeit
+        // Spieler steht auf Boden, Leiter, Flüssigkeit oder Slab → reset
         if (p.isOnGround() || isOnClimbableBlock(to) || isStandingOnLiquid(to) || isOnSlabOrStair(to)) {
             updateSafeLocation(p, to);
+            airStartTime.remove(p.getUniqueId());
             return;
         }
 
-        // Heuristik: Spieler "schwebt" in der Luft
-        double verticalThreshold = 0.35;
-        if (dy > verticalThreshold) {
-            long now = System.currentTimeMillis();
-            UUID id = p.getUniqueId();
-            Long last = lastFlagTime.get(id);
-            if (last != null && now - last < FLAG_COOLDOWN_MS) return;
-            lastFlagTime.put(id, now);
+        // Spieler ist in der Luft → wie lange?
+        UUID id = p.getUniqueId();
+        long now = System.currentTimeMillis();
+        airStartTime.putIfAbsent(id, now);
+        long airTime = now - airStartTime.get(id);
 
-            // Erhöhe Violation Counter
-            int violations = flyViolations.getOrDefault(id, 0) + 1;
-            flyViolations.put(id, violations);
-
-            // Admins informieren
-            String msg = "§c[LuxAntiCheat] Spieler §e" + p.getName() + " §cist verdächtigt zu fliegen! (" + violations + "/" + MAX_VIOLATIONS + ")";
-            for (Player online : Bukkit.getOnlinePlayers()) {
-                if (online.isOp() || online.hasPermission("luxanticheat.bypass")) {
-                    online.sendMessage(msg);
-                }
-            }
-
-            // Kick nach 5 Mal
-            if (violations >= MAX_VIOLATIONS) {
-                p.kickPlayer("§cFly-Hack erkannt!");
-                flyViolations.remove(id); // Counter zurücksetzen
-                return;
-            }
-
-            // Teleportiere zur letzten sicheren Position
-            Location safe = lastSafeLocation.get(id);
-            if (safe != null && safe.getWorld().equals(p.getWorld())) {
-                plugin.getServer().getScheduler().runTask(plugin, () -> {
-                    p.teleport(safe);
-                    p.setFallDistance(0f);
-                    p.setVelocity(new Vector(0, 0, 0));
-                });
-            } else {
-                plugin.getServer().getScheduler().runTask(plugin, () -> p.setAllowFlight(false));
-            }
+        // normale Sprünge erlauben
+        if (airTime < JUMP_TOLERANCE_MS) {
             return;
         }
 
-        // Safe Location aktualisieren
-        updateSafeLocation(p, to);
+        // Cooldown beachten
+        Long last = lastFlagTime.get(id);
+        if (last != null && now - last < FLAG_COOLDOWN_MS) return;
+        lastFlagTime.put(id, now);
+
+        int violations = flyViolations.getOrDefault(id, 0) + 1;
+        flyViolations.put(id, violations);
+
+        // Admins benachrichtigen
+        String msg = "§c[LuxAntiCheat] Spieler §e" + p.getName() + " §cist verdächtigt zu fliegen! (" + violations + "/" + MAX_VIOLATIONS + ")";
+        for (Player online : Bukkit.getOnlinePlayers()) {
+            if (online.isOp() || online.hasPermission("luxanticheat.notify")) {
+                online.sendMessage(msg);
+            }
+        }
+
+        // Kick nach zu vielen Flags
+        if (violations >= MAX_VIOLATIONS) {
+            p.kickPlayer("§cFly-Hack erkannt!");
+            flyViolations.remove(id);
+            airStartTime.remove(id);
+            return;
+        }
+
+        // Teleportiere zurück
+        Location safe = lastSafeLocation.get(id);
+        if (safe != null && safe.getWorld().equals(p.getWorld())) {
+            plugin.getServer().getScheduler().runTask(plugin, () -> {
+                p.teleport(safe);
+                p.setFallDistance(0f);
+                p.setVelocity(new Vector(0, 0, 0));
+            });
+        }
     }
 
     private void updateSafeLocation(Player p, Location loc) {
