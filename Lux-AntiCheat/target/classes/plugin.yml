@@ -1,0 +1,10 @@
+name: LuxAntiCheat
+version: 1.0
+main: org.luxanticheat.luxAntiCheat.LuxAntiCheat
+api-version: 1.21
+author: Lennard.R
+commands:
+  luxanticheat:
+    description: Kontrolliert LuxAntiCheat
+    usage: /<command> <enable|disable>
+    permission: luxanticheat.admin

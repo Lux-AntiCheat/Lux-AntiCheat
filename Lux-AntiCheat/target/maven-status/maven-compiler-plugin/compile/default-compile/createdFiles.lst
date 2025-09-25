@@ -1,0 +1,3 @@
+org\luxanticheat\luxAntiCheat\LuxAntiCheat.class
+org\luxanticheat\luxAntiCheat\checks\player\FlyCheckListener.class
+org\luxanticheat\luxAntiCheat\checks\player\SpeedListener.class
